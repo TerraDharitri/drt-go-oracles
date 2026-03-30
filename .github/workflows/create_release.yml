@@ -18,49 +18,42 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     name: Build
     steps:
-      - name: Set up Go 1.x
-        uses: actions/setup-go@v2
-        with:
-          go-version: ^1.23.6
-        id: go
-
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: "0"
 
-      - name: Get dependencies
-        run: |
-          go get -v -t -d ./...
-          if [ -f Gopkg.toml ]; then
-              curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-              dep ensure
-          fi
+      - name: Set up Go 1.x
+        uses: actions/setup-go@v5
+        with:
+          go-version: ^1.23.6
 
-      # https://docs.github.com/en/free-pro-team@latest/actions/reference/workflow-commands-for-github-actions#setting-an-environment-variable
+      - name: Get dependencies
+        run: go mod download
+
       - name: Set environment variables
         run: |
-          APP_VER_SHORT=$(git describe --tags)
+          APP_VER_SHORT=$(git describe --tags --always)
           GOOS=$(go env GOOS)
           GOARCH=$(go env GOARCH)
-          GOPATH=$(go env GOPATH)
-          ARCHIVE="drt-go-oracles""$APP_VER_SHORT""_""$GOOS""_""$GOARCH"".tgz"
+          ARCHIVE="drt-go-oracles_${APP_VER_SHORT}_${GOOS}_${GOARCH}.tgz"
+          ARTIFACT_NAME="drt-go-oracles_${GOOS}_${GOARCH}"
           BUILD_DIR=${GITHUB_WORKSPACE}/build
 
+          echo "APP_VER_SHORT=${APP_VER_SHORT}" >> $GITHUB_ENV
           echo "GOOS=${GOOS}" >> $GITHUB_ENV
           echo "GOARCH=${GOARCH}" >> $GITHUB_ENV
           echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${ARTIFACT_NAME}" >> $GITHUB_ENV
           echo "BUILD_DIR=${BUILD_DIR}" >> $GITHUB_ENV
 
       - name: Build
         run: |
           mkdir -p ${BUILD_DIR}
-          cd ${GITHUB_WORKSPACE}/cmd/oracle && go build -o "${BUILD_DIR}/" -a -i -ldflags="-X main.appVersion=${APP_VER}"
+          cd ${GITHUB_WORKSPACE}/cmd/oracle && go build -o "${BUILD_DIR}/" -ldflags="-X main.appVersion=${{ env.APP_VER_SHORT }}"
 
       - name: Package
         run: |
-          cd ${GITHUB_WORKSPACE}
-
           cd ${BUILD_DIR}
           tar czvf "${GITHUB_WORKSPACE}/${ARCHIVE}" *
           stat ${GITHUB_WORKSPACE}/${ARCHIVE}
@@ -68,7 +61,7 @@ jobs:
       - name: Save artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARCHIVE }}
+          name: ${{ env.ARTIFACT_NAME }}
           path: ${{ github.workspace }}/${{ env.ARCHIVE }}
           if-no-files-found: error
 
@@ -77,10 +70,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: "0"
 
-        # https://docs.github.com/en/free-pro-team@latest/actions/guides/storing-workflow-data-as-artifacts#downloading-or-deleting-artifacts
-        # A directory for each artifact is created using its name
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v4
         with:
@@ -94,7 +87,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          hub release create --draft --message="Release draft from Github Actions" vNext
-          for i in $(find ./assets -name '*.tgz' -type f); do
-            hub release edit --attach=${i} --message="" vNext
-          done
+          TAG=$(git describe --tags --always)
+          gh release delete ${TAG} --yes 2>/dev/null || true
+          gh release create ${TAG} --draft \
+            --title "Release draft from Github Actions" \
+            --notes "" \
+            $(find ./assets -name '*.tgz' -type f)
